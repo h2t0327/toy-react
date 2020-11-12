@@ -49,8 +49,8 @@ class TextWrapper {
   }
 
   [RENDER_TO_DOM](range) {
-    range.deleteContents()
-    range.insertNode(this.root)
+    range.deleteContents() // 清除当前指针包含的内容
+    range.insertNode(this.root) // 插入指针后面插入dom
   }
 }
 
@@ -58,7 +58,7 @@ export class Component {
   constructor() {
     this.props = Object.create(null) // 组件的props
     this.children = [] // 组件的孩子们
-    this._range = null
+    this._range = null // 私有当前组件指针
   }
 
   setAttribute(name, value) {
@@ -72,14 +72,14 @@ export class Component {
   }
 
   [RENDER_TO_DOM](range) {
-    this._range = range
-    this.render()[RENDER_TO_DOM](range)
+    this._range = range // 保存当前组件指针
+    this.render()[RENDER_TO_DOM](range) // 调用render， 传入指针
   }
 
   reRender(callback, preState, nextState) {
     const oldRange = this._range
     const range = addRange(oldRange.startContainer, oldRange.startOffset)
-    this[RENDER_TO_DOM](range)
+    this[RENDER_TO_DOM](range) // 在旧指针后面重新render
 
     oldRange.setStart(range.endContainer, range.endOffset)
     oldRange.deleteContents()
