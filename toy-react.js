@@ -8,56 +8,20 @@ const addRange = (ele, start, end) => {
   return range
 }
 
-// 实体dom的一层包裹
-class ElementWrapper {
-  constructor(tagName) {
-    this.root = document.createElement(tagName) // 创建一个实体dom
-  }
+const replaceContent = (range, node) => {
+  range.insertNode(node)
+  range.setStartAfter(node)
+  range.deleteContents()
 
-  setAttribute(name, value) {
-    // 匹配带有on开头的属性， 如果有说明是监听事件
-    if (name.match(/^on([\s\S]+)$/)) {
-      // 取到的事件名字开头是以大写的， 需要替换成小写
-      this.root.addEventListener(
-        RegExp.$1.replace(/^[\s\S]/, (v) => v.toLowerCase()),
-        value
-      )
-    } else {
-      // 替换掉className 属性， 改为浏览器可以理解的class
-      if (name === 'className') {
-        name = 'class'
-      }
-      this.root.setAttribute(name, value) // 给实体dom赋属性值
-    }
-  }
-
-  appendChild(component) {
-    const len = this.root.childNodes.length // 获取当前dom的子节点长度
-    const range = addRange(this.root, len, len) // 创建一个新指针，并指向当前dom节点最后
-    component[RENDER_TO_DOM](range) // 执行插入dom
-  }
-
-  [RENDER_TO_DOM](range) {
-    range.deleteContents() // 清除当前指针包含的内容
-    range.insertNode(this.root) // 插入指针后面插入dom
-  }
-}
-
-class TextWrapper {
-  constructor(text) {
-    this.root = document.createTextNode(text) // 创建一个实体文本dom
-  }
-
-  [RENDER_TO_DOM](range) {
-    range.deleteContents() // 清除当前指针包含的内容
-    range.insertNode(this.root) // 插入指针后面插入dom
-  }
+  range.setStartBefore(node)
+  range.setEndAfter(node)
 }
 
 export class Component {
   constructor() {
     this.props = Object.create(null) // 组件的props
     this.children = [] // 组件的孩子们
+    this._root = null
     this._range = null // 私有当前组件指针
   }
 
@@ -71,25 +35,85 @@ export class Component {
     this.children.push(component)
   }
 
+  get vdom() {
+    return this.render().vdom
+  }
+
   [RENDER_TO_DOM](range) {
     this._range = range // 保存当前组件指针
-    this.render()[RENDER_TO_DOM](range) // 调用render， 传入指针
+    this._vdom = this.vdom
+    this._vdom[RENDER_TO_DOM](range) // 调用render， 传入指针
   }
 
-  reRender(callback, preState, nextState) {
-    const oldRange = this._range
-    const range = addRange(oldRange.startContainer, oldRange.startOffset)
-    this[RENDER_TO_DOM](range) // 在旧指针后面重新render
+  update() {
+    const isSameNode = (oldNode, newNode) => {
+      if (oldNode.type !== newNode) {
+        return false
+      }
 
-    oldRange.setStart(range.endContainer, range.endOffset)
-    oldRange.deleteContents()
-    callback && callback(preState, nextState)
+      for (const name in newNode.props) {
+        if (oldNode.props[name] !== newNode.props[name]) {
+          return false
+        }
+      }
+
+      if (
+        Object.keys(oldNode.props).length > Object.keys(newNode.props).length
+      ) {
+        return false
+      }
+
+      if (newNode.type === '#text') {
+        if (newNode.content !== oldNode.content) {
+          return false
+        }
+      }
+
+      return true
+    }
+
+    const update = (oldNode, newNode) => {
+      if (!isSameNode(oldNode, newNode)) {
+        newNode[RENDER_TO_DOM](oldNode._range)
+        return
+      }
+      newNode._range = oldNode._range
+
+      const newChildren = newNode.vchildren
+      const oldChildren = oldNode.vchildren
+
+      if (!newChildren || !oldChildren) {
+        return
+      }
+
+      const tailRange = oldChildren[oldChildren.length - 1]._range
+
+      for (let i = 0; i < newChildren.length; i++) {
+        let newChild = newChildren[i]
+        let oldChild = oldChildren[i]
+        if (i < oldChildren.length) {
+          update(oldChild, newChild)
+        } else {
+          const range = addRange(
+            tailRange.startContainer,
+            tailRange.endOffset,
+            tailRange.endOffset
+          )
+          newChild[RENDER_TO_DOM](range)
+          tailRange = range
+        }
+      }
+    }
+
+    const vdom = this.vdom
+    update(this._vdom, vdom)
+    this._vdom = vdom
   }
 
-  setState(newState, callback) {
+  setState(newState) {
     if (this.state === null || typeof this.state !== 'object') {
       this.state = newState
-      this.reRender(callback, this.state, newState)
+      this.update()
       return
     }
 
@@ -106,7 +130,70 @@ export class Component {
     }
 
     merge(this.state, newState)
-    this.reRender(callback, this.state, newState)
+    this.update()
+  }
+}
+
+// 实体dom的一层包裹
+class ElementWrapper extends Component {
+  constructor(type) {
+    super(type)
+    this.type = type // 创建一个实体dom
+  }
+
+  get vdom() {
+    this.vchildren = this.children.map((child) => child.vdom)
+    return this
+  }
+
+  [RENDER_TO_DOM](range) {
+    this._range = range
+    const root = document.createElement(this.type)
+    for (let name in this.props) {
+      const value = this.props[name]
+      if (name.match(/^on([\s\S]+)$/)) {
+        root.addEventListener(
+          RegExp.$1.replace(/^[\s\S]/, (v) => v.toLowerCase()),
+          value
+        )
+      } else {
+        if (name === 'className') {
+          name = 'class'
+        }
+        root.setAttribute(name, value) // 给实体dom赋属性值
+      }
+    }
+
+    if(!this.vchildren) {
+      this.vchildren = this.children.map((child) => child.vdom)
+    }
+
+    for(let child of this.vchildren) {
+      const childRange = addRange(root, root.childNodes.length, root.childNodes.length)
+      child[RENDER_TO_DOM](childRange)
+    }
+
+    replaceContent(range, root)
+  }
+}
+
+class TextWrapper extends Component {
+  constructor(content) {
+    super(content)
+    this.type = '#text'
+    this.content = content
+  }
+
+  get vdom() {
+    return this
+  }
+
+  [RENDER_TO_DOM](range) {
+    this._range = range
+
+    const root = document.createTextNode(this.content)
+
+    replaceContent(range, root)
   }
 }
 
@@ -116,7 +203,7 @@ export const createElement = (type, attributes, ...children) => {
   if (typeof type === 'string') {
     ele = new ElementWrapper(type)
   } else {
-    ele = new type // 如果不是说明是一个组件dom
+    ele = new type() // 如果不是说明是一个组件dom
   }
 
   for (const attr in attributes) {
